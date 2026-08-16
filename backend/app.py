@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import joblib
 import pandas as pd
+from pathlib import Path
 
 app = FastAPI()   # <-- MUST COME FIRST
 
@@ -17,7 +18,9 @@ app.add_middleware(
 # -----------------------------
 # Load Pipeline
 # -----------------------------
-pipeline = joblib.load("deployable_pipeline.pkl")
+BASE_DIR = Path(__file__).resolve().parent
+
+pipeline = joblib.load(BASE_DIR / "deployable_pipeline.pkl")
 
 scaler = pipeline["scaler"]
 model = pipeline["model"]
@@ -49,8 +52,8 @@ def extract_features(url: str):
     data["NoOfSubDomain"] = url.count('.') - 1
 
     suspicious_words = [
-        "login","secure","update","verify","account",
-        "paypal","google","facebook","bank","confirm"
+    "login", "secure", "update", "verify",
+    "account", "confirm", "bank"
     ]
 
     hit = int(any(w in url for w in suspicious_words))
@@ -71,16 +74,15 @@ def extract_features(url: str):
 @app.post("/predict")
 def predict(req: URLRequest):
     try:
-        X = extract_features(req.url)
+        url = req.url.lower().strip()
+
+        X = extract_features(url)
         X_scaled = scaler.transform(X)
 
         prob = float(model.predict_proba(X_scaled)[0][1])
 
         THRESHOLD = 0.45
 
-        phishing = prob >= THRESHOLD
-
-        # ---------- WHITELIST ----------
         WHITELIST = [
             "google.com",
             "youtube.com",
@@ -91,31 +93,32 @@ def predict(req: URLRequest):
             "wikipedia.org"
         ]
 
-        if any(site in req.url.lower() for site in WHITELIST):
+        is_whitelisted = any(site in url for site in WHITELIST)
+
+        if is_whitelisted:
             phishing = False
+        else:
+            phishing = prob >= THRESHOLD
 
-        # ---------- RULE-BASED PHISHING ----------
-        rule_phishing = any(word in req.url.lower() for word in [
-            "login-",
-            "verify-",
-            "secure-",
-            "update-",
-            "account-",
-            "paypal",
-            "google",
-            "facebook",
-            "bank"
-        ])
+            rule_phishing = any(word in url for word in [
+                "login-",
+                "verify-",
+                "secure-",
+                "update-",
+                "account-",
+                "paypal",
+                "google",
+                "facebook",
+                "bank"
+            ])
 
-        phishing = phishing or rule_phishing
+            phishing = phishing or rule_phishing
 
-        # ---------- CONFIDENCE ----------
         if phishing:
             confidence = round(max(prob, 0.6) * 100, 2)
         else:
             confidence = round((1 - prob) * 100, 2)
 
-        # ---------- RISK ----------
         if phishing and prob >= 0.7:
             risk = "High Risk"
         elif phishing:
@@ -136,8 +139,3 @@ def predict(req: URLRequest):
 @app.get("/")
 def home():
     return {"message": "Phishing Detection API Running"}
-
-
-
-
-
